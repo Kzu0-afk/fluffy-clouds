@@ -1,8 +1,8 @@
-🎬 ReelTranscribe AI
+☁️ Fluffy Cloudz ver. 1.0.0
 An automated video-to-text transcription tool optimized for social media content creators. This application leverages OpenAI Whisper for high-accuracy speech recognition and Streamlit for a seamless, browser-based user experience.
 
 🛠 Project Overview
-ReelTranscribe AI allows users to upload video files (MP4, MOV, etc.), extracts the audio stream, and processes it through a neural network to provide a full, time-stamped (optional) transcription.
+Fluffy Cloudz ver. 1.0.0 allows users to upload video files (MP4, MOV, etc.), extracts the audio stream, and processes it through a neural network to provide a full, time-stamped (optional) transcription.
 
 ⚙️ Setup & Installation
 1. System Requirements
@@ -27,9 +27,9 @@ import os
 import tempfile
 
 # Page Configuration
-st.set_page_config(page_title="ReelTranscribe AI", page_icon="🎬", layout="centered")
+st.set_page_config(page_title="Fluffy Cloudz ver. 1.0.0", page_icon="☁️", layout="centered")
 
-st.title("🎬 ReelTranscribe AI")
+st.title("☁️ Fluffy Cloudz ver. 1.0.0")
 st.info("Upload a Reel or Video to generate a full transcription.")
 
 # 1. Model Loading (Cached for performance)
