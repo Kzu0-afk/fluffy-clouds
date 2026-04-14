@@ -1,4 +1,4 @@
-# FluffyClouds
+# FluffyClouds (Local Transcriber-Subtitle Web Application)
 
 FluffyClouds (Version 1.0.0) is a premium, Streamlit-based web application designed for high-end video transcription and cinematic subtitle crafting. It provides an intuitive, AI-powered editorial suite that easily extracts audio from video files, transcribes speech with high precision, and seamlessly renders beautifully styled subtitles directly into your media.
 
