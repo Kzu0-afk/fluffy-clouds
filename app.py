@@ -8,27 +8,27 @@ import time
 import re
 
 # Page Configuration
-st.set_page_config(page_title="ReelTranscribe AI", page_icon="🎬", layout="centered")
+st.set_page_config(page_title="Fluffy Cloudz ver. 1.0.0", page_icon="☁️", layout="centered")
 
-st.title("🎬 ReelTranscribe AI")
+st.title("☁️ Fluffy Cloudz ver. 1.0.0")
 st.info("Upload a Reel or Video to generate a full transcription and burned subtitles.")
 
 # --- Models ---
 @st.cache_resource(show_spinner="Loading Model Weights into Memory (This may take a minute on first run)...")
 def load_whisper_model(size, device_choice):
+    # Smart quantization: GPU gets float16 (accurate), CPU gets int8 (fast)
+    compute = "float16" if device_choice == "cuda" else "int8"
     try:
-        return WhisperModel(size, device=device_choice, compute_type="int8")
+        return WhisperModel(size, device=device_choice, compute_type=compute)
     except Exception:
-        pass
-        
-    # Final fallback if int8 fails on unsupported architectures
-    return WhisperModel(size, device=device_choice, compute_type="default")
+        # Fallback: force CPU + int8 if the chosen device/precision fails
+        return WhisperModel(size, device="cpu", compute_type="int8")
 
 st.sidebar.markdown("### Hardware")
 hardware = st.sidebar.radio("Hardware Acceleration", ["CPU (Compatible)", "GPU (Requires CUDA)"], index=0)
 device_val = "cuda" if "GPU" in hardware else "cpu"
 
-model_size = st.sidebar.selectbox("Select Model Size", ["tiny", "base", "small", "medium"], index=1)
+model_size = st.sidebar.selectbox("Select Model Size", ["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"], index=2)
 model = load_whisper_model(model_size, device_val)
 
 # --- Subtitle UI ---
@@ -56,6 +56,54 @@ def format_timestamp(seconds: float):
     sec = milliseconds // 1000
     milliseconds -= sec * 1000
     return f"{hours:02d}:{minutes:02d}:{sec:02d},{milliseconds:03d}"
+
+def build_srt_from_segments(segments_list):
+    """Build SRT content and plain text from transcribed segments.
+    
+    Uses word-level timestamps when available to produce tightly-timed
+    subtitle chunks (≤10 words each, split on natural pauses). Falls
+    back to segment-level timing when word data is unavailable.
+    """
+    srt_index = 1
+    srt_parts = []
+    text_parts = []
+
+    for segment in segments_list:
+        words = getattr(segment, "words", None)
+
+        if not words:
+            # Fallback: use coarse segment-level timing
+            start_ts = format_timestamp(segment.start)
+            end_ts = format_timestamp(segment.end)
+            text = segment.text.strip()
+            text_parts.append(text)
+            srt_parts.append(f"{srt_index}\n{start_ts} --> {end_ts}\n{text}\n")
+            srt_index += 1
+            continue
+
+        # Word-level: group into natural ≤10-word chunks
+        chunk_words = []
+        chunk_start = None
+
+        for idx, word in enumerate(words):
+            if chunk_start is None:
+                chunk_start = word.start
+            chunk_words.append(word.word.strip())
+
+            is_last = idx + 1 >= len(words)
+            has_pause = (not is_last and words[idx + 1].start - word.end > 0.7)
+
+            if len(chunk_words) >= 10 or is_last or has_pause:
+                line = " ".join(chunk_words)
+                text_parts.append(line)
+                start_ts = format_timestamp(chunk_start)
+                end_ts = format_timestamp(word.end)
+                srt_parts.append(f"{srt_index}\n{start_ts} --> {end_ts}\n{line}\n")
+                srt_index += 1
+                chunk_words = []
+                chunk_start = None
+
+    return "\n".join(srt_parts), " ".join(text_parts)
 
 # --- Main App ---
 uploaded_file = st.file_uploader("Upload Video File", type=["mp4", "mov", "avi", "mkv"])
@@ -87,43 +135,51 @@ if uploaded_file:
                 video_clip.audio.write_audiofile(temp_audio_path, logger=None)
                 video_clip.close()
 
-                # 2. Transcribe with VAD Filtering & INT8
+                # 2. Transcribe with accuracy-first parameters
                 st.toast("Starting Heavy Processing", icon="⏳")
-                status_bar.info(f"🧠 Waking up AI (Running VAD & Language Detection)... Please wait.")
+                status_bar.info("🧠 Waking up AI (Running VAD & Language Detection)... Please wait.")
                 progress_bar.progress(0.0)
                 
-                # Faster-whisper blocks here while it parses the initial audio for language and silences
-                # This can take 10-30 seconds on CPU.
-                # If auto-detect is off, we skip the heavy language-ID processing phase entirely
+                # Accuracy-first configuration:
+                #   beam_size=5           → explore 5 paths (was 1 which caused ~20-30% accuracy loss)
+                #   word_timestamps=True  → precise per-word SRT timing
+                #   condition_on_previous_text=False → kill hallucination feedback loops
+                #   hallucination_silence_threshold=2 → skip phantom text in ≥2s silent gaps
                 segments, info = model.transcribe(
                     temp_audio_path,
                     language=selected_language_code,
+                    beam_size=5,
                     vad_filter=True, 
                     vad_parameters=dict(min_silence_duration_ms=500),
-                    beam_size=1 
+                    word_timestamps=True,
+                    condition_on_previous_text=False,
+                    no_speech_threshold=0.6,
+                    hallucination_silence_threshold=2.0,
                 )
                 
                 total_duration = info.duration
                 start_time = time.time()
-                srt_content = ""
-                full_text = ""
                 
-                for i, segment in enumerate(segments, start=1):
+                # Materialize segments with progress tracking
+                segments_list = []
+                for segment in segments:
+                    segments_list.append(segment)
+
                     # -- Progress Update --
-                    current_time = segment.end
-                    progress = min(current_time / total_duration, 1.0)
+                    progress = min(segment.end / total_duration, 1.0)
                     progress_bar.progress(progress)
                     
                     elapsed = time.time() - start_time
-                    eta = (elapsed / progress) - elapsed if progress > 0 else 0
-                    status_bar.info(f"🗣️ Transcribing audio (Removing silence via VAD)... | ETA: {int(eta)}s")
-                    
-                    # -- Text Build --
-                    start_ts = format_timestamp(segment.start)
-                    end_ts = format_timestamp(segment.end)
-                    text = segment.text.strip()
-                    full_text += text + " "
-                    srt_content += f"{i}\n{start_ts} --> {end_ts}\n{text}\n\n"
+                    if progress > 0.01:
+                        eta = (elapsed / progress) * (1.0 - progress)
+                        mins, secs = divmod(int(eta), 60)
+                        eta_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                    else:
+                        eta_str = "calculating..."
+                    status_bar.info(f"🗣️ Transcribing... {progress:.0%} | ETA: {eta_str}")
+                
+                # Build SRT with word-level precision (backend logic)
+                srt_content, full_text = build_srt_from_segments(segments_list)
                 
                 progress_bar.progress(1.0)
                 status_bar.success("✅ Transcription Complete!")
@@ -173,8 +229,13 @@ if uploaded_file:
                             progress_bar.progress(progress)
                             
                             elapsed = time.time() - start_time
-                            eta = (elapsed / progress) - elapsed if progress > 0 else 0
-                            status_bar.info(f"🔥 Burning Subtitles... {progress:.0%} | ETA: {int(eta)}s")
+                            if progress > 0.01:
+                                eta = (elapsed / progress) * (1.0 - progress)
+                                mins, secs = divmod(int(eta), 60)
+                                eta_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                            else:
+                                eta_str = "calculating..."
+                            status_bar.info(f"🔥 Burning Subtitles... {progress:.0%} | ETA: {eta_str}")
                     
                     process.wait()
                     
